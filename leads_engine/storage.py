@@ -1,72 +1,68 @@
-"""
-File-based lead storage.
-Leads are written as JSON lines to leads_database/<channel>.jsonl
-One file per influencer channel for easy querying and export.
-"""
-
 import json
 import os
 from pathlib import Path
 from typing import Optional
 
-from leads_engine.models import Lead, InfluencerChannel, LeadTier
+from leads_engine.models import Lead, LeadStatus
 
-DB_DIR = Path(os.getenv("LEADS_DB_DIR", "leads_database"))
+DB_FILE = Path(os.getenv("LEADS_DB_DIR", "leads_database")) / "leads.jsonl"
 
 
-def _channel_file(channel: InfluencerChannel) -> Path:
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    return DB_DIR / f"{channel.value}.jsonl"
+def _ensure():
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
 def save_lead(lead: Lead) -> None:
-    path = _channel_file(lead.channel)
-    with path.open("a", encoding="utf-8") as f:
+    _ensure()
+    with DB_FILE.open("a", encoding="utf-8") as f:
         f.write(lead.model_dump_json() + "\n")
 
 
-def get_leads(
-    channel: Optional[InfluencerChannel] = None,
-    tier: Optional[LeadTier] = None,
-) -> list[Lead]:
-    channels = [channel] if channel else list(InfluencerChannel)
-    results: list[Lead] = []
+def _all() -> list[Lead]:
+    _ensure()
+    if not DB_FILE.exists():
+        return []
+    leads = []
+    for line in DB_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            leads.append(Lead.model_validate_json(line))
+    return sorted(leads, key=lambda l: l.created_at, reverse=True)
 
-    for ch in channels:
-        path = _channel_file(ch)
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            lead = Lead.model_validate_json(line)
-            if tier is None or lead.score.tier == tier:
-                results.append(lead)
 
-    results.sort(key=lambda l: l.created_at, reverse=True)
-    return results
+def get_leads(status: Optional[LeadStatus] = None, source: Optional[str] = None) -> list[Lead]:
+    leads = _all()
+    if status:
+        leads = [l for l in leads if l.status == status]
+    if source:
+        leads = [l for l in leads if l.source == source]
+    return leads
 
 
 def get_lead_by_id(lead_id: str) -> Optional[Lead]:
-    for ch in InfluencerChannel:
-        path = _channel_file(ch)
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            lead = Lead.model_validate_json(line)
-            if lead.id == lead_id:
-                return lead
-    return None
+    return next((l for l in _all() if l.id == lead_id), None)
 
 
-def count_by_tier(channel: InfluencerChannel) -> dict[str, int]:
-    leads = get_leads(channel=channel)
-    return {
-        "premium": sum(1 for l in leads if l.score.tier == LeadTier.premium),
-        "standard": sum(1 for l in leads if l.score.tier == LeadTier.standard),
-        "total": len(leads),
-    }
+def update_status(lead_id: str, new_status: LeadStatus) -> Optional[Lead]:
+    leads = _all()
+    updated = None
+    for lead in leads:
+        if lead.id == lead_id:
+            lead.status = new_status
+            updated = lead
+    if updated:
+        DB_FILE.write_text(
+            "\n".join(l.model_dump_json() for l in leads) + "\n",
+            encoding="utf-8"
+        )
+    return updated
+
+
+def get_stats() -> dict:
+    leads = _all()
+    counts = {s.value: 0 for s in LeadStatus}
+    sources: dict[str, int] = {}
+    for l in leads:
+        counts[l.status.value] += 1
+        sources[l.source] = sources.get(l.source, 0) + 1
+    return {"total": len(leads), "by_status": counts, "by_source": sources}
