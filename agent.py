@@ -62,10 +62,14 @@ def load_soul() -> str:
 
 
 def strip_think(text: str) -> tuple[str, str]:
-    """Separate <think>...</think> from the visible response."""
+    """Separate <think>...</think> from the visible response.
+    If nothing remains after stripping, show thinking as the response."""
     match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
     thinking = match.group(1).strip() if match else ""
     clean = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    if not clean and thinking:
+        clean = thinking
+        thinking = ""
     return clean, thinking
 
 
