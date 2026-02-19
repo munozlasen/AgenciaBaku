@@ -71,9 +71,20 @@ def _detect_mode(text: str) -> str:
     return "BAKU_MASTER"
 
 
+def _inject_no_think(messages: list[dict]) -> list[dict]:
+    """Prepend /no_think to the last user message — qwen3 native directive."""
+    msgs = [m.copy() for m in messages]
+    for m in reversed(msgs):
+        if m["role"] == "user":
+            if not m["content"].startswith("/no_think"):
+                m["content"] = "/no_think " + m["content"]
+            break
+    return msgs
+
+
 async def chat(messages: list[dict]) -> dict:
     """Send messages to BAKU_MASTER via Ollama native API."""
-    full_messages = [{"role": "system", "content": _load_soul()}] + messages
+    full_messages = [{"role": "system", "content": _load_soul()}] + _inject_no_think(messages)
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -83,7 +94,6 @@ async def chat(messages: list[dict]) -> dict:
                     "model": OLLAMA_MODEL,
                     "messages": full_messages,
                     "stream": False,
-                    "think": False,
                 },
             )
             r.raise_for_status()
