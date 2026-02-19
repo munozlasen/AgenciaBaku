@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path("/home/user/AgenciaBaku/baku_memory.db")
+DB_PATH = Path(__file__).parent.parent / "baku_memory.db"
 
 
 def _now() -> str:
