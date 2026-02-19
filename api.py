@@ -11,9 +11,12 @@ Endpoints:
 
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from leads_engine.models import (
     IgnaciaLeadInput,
@@ -33,6 +36,13 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def index():
+    return Path("static/index.html").read_text(encoding="utf-8")
 
 
 def _now() -> str:
