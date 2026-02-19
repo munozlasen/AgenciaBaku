@@ -258,6 +258,63 @@
     .send-btn:disabled{opacity:0.4;cursor:not-allowed;}
     .input-hint{font-size:11px;color:var(--muted);text-align:center;margin-top:7px;}
 
+    /* ── Agent autonomous panel ── */
+    .agent-section{padding:12px 14px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;flex:1;}
+    .agent-status-bar{
+      background:var(--surface2);border:1px solid var(--border);
+      border-radius:10px;padding:11px 13px;display:flex;align-items:center;justify-content:space-between;
+    }
+    .agent-status-info{display:flex;flex-direction:column;gap:2px;}
+    .agent-status-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;}
+    .agent-status-val{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px;}
+    .agent-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}
+    .agent-dot.idle{background:var(--yellow);box-shadow:0 0 8px var(--yellow);}
+    .agent-dot.off{background:var(--muted);box-shadow:none;animation:none;}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+    .trigger-btn{
+      padding:6px 12px;border-radius:8px;border:none;
+      background:var(--accent3);color:var(--accent2);
+      font-size:11px;font-weight:700;cursor:pointer;
+      border:1px solid rgba(124,92,252,0.25);transition:all 0.2s;
+    }
+    .trigger-btn:hover{background:rgba(124,92,252,0.25);}
+    .trigger-btn:disabled{opacity:0.5;cursor:not-allowed;}
+
+    .agent-section-title{
+      font-size:10px;font-weight:700;color:var(--muted);
+      text-transform:uppercase;letter-spacing:0.8px;margin-top:4px;
+    }
+
+    .task-list{display:flex;flex-direction:column;gap:5px;}
+    .task-item{
+      background:var(--surface2);border:1px solid var(--border);
+      border-radius:9px;padding:9px 11px;
+    }
+    .task-title{font-size:12px;font-weight:600;margin-bottom:3px;line-height:1.3;}
+    .task-meta{display:flex;align-items:center;gap:6px;}
+    .task-badge{
+      font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;
+      text-transform:uppercase;letter-spacing:0.3px;
+    }
+    .tb-pending{background:rgba(251,191,36,0.1);color:var(--yellow);}
+    .tb-running{background:rgba(124,92,252,0.15);color:var(--accent2);}
+    .tb-done{background:rgba(52,211,153,0.1);color:var(--green);}
+    .tb-failed{background:rgba(248,113,113,0.1);color:var(--red);}
+    .task-type{font-size:10px;color:var(--muted);}
+
+    .log-list{display:flex;flex-direction:column;gap:4px;}
+    .log-item{
+      font-size:11px;line-height:1.4;padding:6px 10px;
+      border-radius:8px;background:var(--surface2);border:1px solid var(--border);
+    }
+    .log-time{color:var(--muted);font-size:10px;}
+    .log-msg{margin-top:1px;}
+    .log-info{border-left:2px solid var(--muted);}
+    .log-success{border-left:2px solid var(--green);}
+    .log-warning{border-left:2px solid var(--yellow);}
+    .log-error{border-left:2px solid var(--red);}
+    .next-run{font-size:11px;color:var(--muted2);}
+
     /* scrollbar */
     ::-webkit-scrollbar{width:4px;}
     ::-webkit-scrollbar-track{background:transparent;}
@@ -286,6 +343,7 @@
     <div class="aside-tabs">
       <div class="aside-tab active" onclick="switchTab('stats',this)">Stats</div>
       <div class="aside-tab" onclick="switchTab('leads',this)">Leads</div>
+      <div class="aside-tab" onclick="switchTab('agent',this)">Agente</div>
     </div>
 
     <!-- Stats panel -->
@@ -309,6 +367,38 @@
       </div>
       <div class="leads-list" id="leads-list"></div>
       <button class="new-lead-btn" onclick="openModal()">+ Registrar lead</button>
+    </div>
+
+    <!-- Agent autonomous panel -->
+    <div class="aside-panel" id="panel-agent">
+      <div class="agent-section">
+
+        <!-- Status -->
+        <div class="agent-status-bar">
+          <div class="agent-status-info">
+            <div class="agent-status-label">Estado del agente</div>
+            <div class="agent-status-val">
+              <div class="agent-dot" id="agent-dot"></div>
+              <span id="agent-status-text">Cargando...</span>
+            </div>
+            <div class="next-run" id="agent-next-run"></div>
+          </div>
+          <button class="trigger-btn" id="trigger-btn" onclick="triggerCycle()">▶ Ejecutar</button>
+        </div>
+
+        <!-- Tasks -->
+        <div class="agent-section-title">Cola de tareas</div>
+        <div class="task-list" id="agent-tasks">
+          <div class="empty-state" style="padding:12px;font-size:12px;">Cargando...</div>
+        </div>
+
+        <!-- Log -->
+        <div class="agent-section-title">Actividad reciente</div>
+        <div class="log-list" id="agent-log">
+          <div class="empty-state" style="padding:12px;font-size:12px;">Cargando...</div>
+        </div>
+
+      </div>
     </div>
   </aside>
 
@@ -376,6 +466,12 @@
   checkOllama();
   loadStats();
   loadLeads();
+  // Auto-refresh agent panel every 15s
+  setInterval(() => {
+    if (document.getElementById('panel-agent').classList.contains('active')) {
+      loadAgentStatus(); loadAgentTasks(); loadAgentLog();
+    }
+  }, 15000);
 
   async function checkOllama() {
     try {
@@ -404,6 +500,7 @@
     el.classList.add('active');
     document.getElementById('panel-'+name).classList.add('active');
     if (name==='leads') loadLeads();
+    else if (name==='agent') { loadAgentStatus(); loadAgentTasks(); loadAgentLog(); }
     else loadStats();
   }
 
@@ -638,6 +735,88 @@
 
   function escHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+  }
+
+  // ── Autonomous Agent ──
+  async function loadAgentStatus() {
+    try {
+      const s = await (await fetch('/agent/status')).json();
+      const dot = document.getElementById('agent-dot');
+      const txt = document.getElementById('agent-status-text');
+      const nxt = document.getElementById('agent-next-run');
+      if (s.running) {
+        dot.className = 'agent-dot';
+        txt.textContent = 'Autónomo activo';
+        const job = s.jobs?.find(j=>j.id==='main_cycle');
+        if (job?.next_run) {
+          const d = new Date(job.next_run);
+          nxt.textContent = 'Próximo ciclo: ' + d.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+        }
+      } else {
+        dot.className = 'agent-dot off';
+        txt.textContent = 'Scheduler detenido';
+        nxt.textContent = '';
+      }
+    } catch {
+      document.getElementById('agent-status-text').textContent = 'Error al cargar';
+    }
+  }
+
+  async function loadAgentTasks() {
+    try {
+      const tasks = await (await fetch('/agent/tasks?limit=10')).json();
+      const el = document.getElementById('agent-tasks');
+      if (!tasks.length) {
+        el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:4px 0">Sin tareas aún</div>';
+        return;
+      }
+      const bc = {pending:'tb-pending',running:'tb-running',done:'tb-done',failed:'tb-failed'};
+      const bl = {pending:'Pendiente',running:'Ejecutando',done:'Completada',failed:'Fallida'};
+      el.innerHTML = tasks.map(t=>`
+        <div class="task-item">
+          <div class="task-title">${escHtml(t.title)}</div>
+          <div class="task-meta">
+            <span class="task-badge ${bc[t.status]||'tb-pending'}">${bl[t.status]||t.status}</span>
+            <span class="task-type">${t.type||''}</span>
+            <span class="task-type" style="margin-left:auto">P${t.priority}</span>
+          </div>
+        </div>
+      `).join('');
+    } catch {}
+  }
+
+  async function loadAgentLog() {
+    try {
+      const log = await (await fetch('/agent/log?limit=15')).json();
+      const el = document.getElementById('agent-log');
+      if (!log.length) {
+        el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:4px 0">Sin actividad aún</div>';
+        return;
+      }
+      el.innerHTML = log.map(a=>{
+        const t = new Date(a.created_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+        return `
+          <div class="log-item log-${a.level}">
+            <div class="log-time">${t}</div>
+            <div class="log-msg">${escHtml(a.message)}</div>
+          </div>`;
+      }).join('');
+    } catch {}
+  }
+
+  async function triggerCycle() {
+    const btn = document.getElementById('trigger-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Ejecutando...';
+    try {
+      await fetch('/agent/trigger', {method:'POST'});
+      btn.textContent = '✓ Iniciado';
+      setTimeout(() => { btn.textContent = '▶ Ejecutar'; btn.disabled = false; }, 3000);
+      setTimeout(() => { loadAgentTasks(); loadAgentLog(); }, 2000);
+    } catch {
+      btn.textContent = '▶ Ejecutar';
+      btn.disabled = false;
+    }
   }
 </script>
 </body>
