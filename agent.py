@@ -87,7 +87,7 @@ async def chat(messages: list[dict]) -> dict:
     full_messages = [{"role": "system", "content": _load_soul()}] + _inject_no_think(messages)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(
                 f"{OLLAMA_HOST}/api/chat",
                 json={
@@ -97,8 +97,12 @@ async def chat(messages: list[dict]) -> dict:
                 },
             )
             r.raise_for_status()
-            raw = r.json()["message"]["content"]
-            content, thinking = _strip_think(raw)
+            data = r.json()
+            content = data["message"].get("content", "").strip()
+            thinking = data["message"].get("thinking", "")
+            if not content and thinking:
+                content = thinking
+                thinking = ""
             return {
                 "content": content,
                 "thinking": thinking,
