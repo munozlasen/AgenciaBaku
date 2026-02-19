@@ -1,0 +1,96 @@
+{
+  "_instructions": [
+    "INSTRUCCIONES:",
+    "1. Abre C:\\OpenClawWorkspace\\.openclaw\\openclaw.json",
+    "2. Busca el agente con id 'main' en la lista 'agents'",
+    "3. Fusiona la configuración de 'agent_main_baku' de abajo con ese agente",
+    "4. Guarda el archivo — OpenClaw lo recarga automáticamente",
+    "5. AgenciaBaku se conectará al Gateway automáticamente al iniciar (python api.py)"
+  ],
+
+  "agent_main_baku": {
+    "id": "main",
+    "name": "BAKU_MASTER",
+    "workspace": "C:\\OpenClawWorkspace\\.openclaw\\workspace",
+
+    "model": {
+      "provider": "ollama",
+      "id": "qwen3:1.7b",
+      "host": "http://127.0.0.1:11434",
+      "options": {
+        "temperature": 0.7,
+        "num_ctx": 8192
+      }
+    },
+
+    "system_prompt_file": "SOUL.md",
+
+    "tools": [
+      {
+        "name": "leads_overview",
+        "description": "Consulta estadísticas del CRM de leads de Baku Agency",
+        "endpoint": "http://localhost:8000/stats",
+        "method": "GET"
+      },
+      {
+        "name": "list_leads",
+        "description": "Lista leads del CRM, filtrable por estado",
+        "endpoint": "http://localhost:8000/leads",
+        "method": "GET"
+      },
+      {
+        "name": "create_lead",
+        "description": "Registra un nuevo lead en el CRM",
+        "endpoint": "http://localhost:8000/leads",
+        "method": "POST"
+      },
+      {
+        "name": "agent_tasks",
+        "description": "Cola de tareas del agente autónomo BAKU_MASTER",
+        "endpoint": "http://localhost:8000/agent/tasks",
+        "method": "GET"
+      },
+      {
+        "name": "agent_log",
+        "description": "Log de actividad reciente del agente autónomo",
+        "endpoint": "http://localhost:8000/agent/log",
+        "method": "GET"
+      },
+      {
+        "name": "trigger_cycle",
+        "description": "Dispara un ciclo autónomo del agente inmediatamente",
+        "endpoint": "http://localhost:8000/agent/trigger",
+        "method": "POST"
+      },
+      {
+        "name": "gateway_status",
+        "description": "Estado de la conexión del bridge BAKU_MASTER ↔ Gateway",
+        "endpoint": "http://localhost:8000/gateway/status",
+        "method": "GET"
+      }
+    ],
+
+    "session": {
+      "dmScope": "main",
+      "historyLimit": 20
+    },
+
+    "bindings": []
+  },
+
+  "gateway": {
+    "port": 18789,
+    "host": "127.0.0.1",
+    "auth": {
+      "token": ""
+    }
+  },
+
+  "_notes": {
+    "bridge": "AgenciaBaku se conecta al Gateway como cliente WebSocket al iniciar.",
+    "env_vars": "Configura GATEWAY_TOKEN en .env si el Gateway tiene token de auth.",
+    "soul": "El SOUL.md se carga desde OPENCLAW_SOUL definido en .env",
+    "leads_ui": "La UI de Baku (http://localhost:8000) sigue funcionando de forma independiente.",
+    "baku_version": "2.0.0 — integrado con OpenClaw Gateway"
+  }
+}

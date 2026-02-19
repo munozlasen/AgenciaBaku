@@ -15,6 +15,8 @@ Baku Agency — MAIN Agent Platform
   POST /agent/tasks   → Crear tarea manualmente
   GET  /agent/log     → Historial de actividad del agente
   GET  /agent/memory  → Memoria persistente del agente
+
+  GET  /gateway/status → Estado de la conexión con OpenClaw Gateway
 """
 
 import uuid
@@ -29,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent import chat
+from gateway.bridge import get_status as gateway_get_status, start_bridge, stop_bridge
 from autonomous.memory import (
     create_task,
     get_all_memory,
@@ -50,7 +53,9 @@ from leads_engine.storage import get_lead_by_id, get_leads, get_stats, save_lead
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await startup()          # init DB, seed tasks, start scheduler
+    await start_bridge()     # conectar BAKU_MASTER al OpenClaw Gateway
     yield
+    await stop_bridge()      # desconectar del Gateway
     await shutdown()         # stop scheduler cleanly
 
 
@@ -154,6 +159,14 @@ def patch_status(lead_id: str, body: StatusUpdate):
 def stats():
     """Conteo de leads por estado y fuente."""
     return get_stats()
+
+
+# ── Gateway ────────────────────────────────────────────────────────────────
+
+@app.get("/gateway/status", tags=["Gateway"])
+def gateway_status():
+    """Estado de la conexión de BAKU_MASTER con el OpenClaw Gateway."""
+    return gateway_get_status()
 
 
 # ── Autonomous Agent ───────────────────────────────────────────────────────────

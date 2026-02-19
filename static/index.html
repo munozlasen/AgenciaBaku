@@ -30,7 +30,18 @@
     .header-right{display:flex;align-items:center;gap:10px;}
     .status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);}
     .status-dot.offline{background:var(--red);box-shadow:0 0 8px var(--red);}
+    .status-dot.connecting{background:var(--yellow);box-shadow:0 0 8px var(--yellow);}
     .status-text{font-size:12px;color:var(--muted2);}
+    .gateway-pill{
+      display:flex;align-items:center;gap:5px;
+      padding:3px 10px;border-radius:20px;
+      border:1px solid rgba(255,255,255,0.08);
+      background:var(--surface2);font-size:11px;color:var(--muted);
+      cursor:default;transition:all 0.3s;
+    }
+    .gateway-pill.online{border-color:rgba(52,211,153,0.3);color:var(--green);}
+    .gateway-pill.offline{border-color:rgba(248,113,113,0.2);color:var(--red);}
+    .gw-dot{width:5px;height:5px;border-radius:50%;background:currentColor;}
     .mode-badge{
       font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;
       background:var(--accent3);color:var(--accent2);
@@ -330,6 +341,10 @@
     Baku Agency
   </div>
   <div class="header-right">
+    <div class="gateway-pill" id="gateway-pill" title="OpenClaw Gateway">
+      <div class="gw-dot"></div>
+      <span id="gateway-text">Gateway...</span>
+    </div>
     <span class="mode-badge" id="mode-badge">BAKU_MASTER</span>
     <div class="status-dot" id="status-dot"></div>
     <span class="status-text" id="status-text">Conectando...</span>
@@ -466,12 +481,14 @@
   checkOllama();
   loadStats();
   loadLeads();
-  // Auto-refresh agent panel every 15s
+  checkGateway();
+  // Auto-refresh agent panel every 15s + gateway status every 10s
   setInterval(() => {
     if (document.getElementById('panel-agent').classList.contains('active')) {
       loadAgentStatus(); loadAgentTasks(); loadAgentLog();
     }
   }, 15000);
+  setInterval(checkGateway, 10000);
 
   async function checkOllama() {
     try {
@@ -491,6 +508,28 @@
     const txt = document.getElementById('status-text');
     dot.className = 'status-dot' + (online ? '' : ' offline');
     txt.textContent = online ? 'BAKU_MASTER online' : 'Ollama offline';
+  }
+
+  async function checkGateway() {
+    const pill = document.getElementById('gateway-pill');
+    const txt = document.getElementById('gateway-text');
+    try {
+      const r = await fetch('/gateway/status');
+      const d = await r.json();
+      if (d.connected) {
+        pill.className = 'gateway-pill online';
+        const sessions = d.sessions > 0 ? ` · ${d.sessions} sesión${d.sessions!==1?'es':''}` : '';
+        txt.textContent = `Gateway ✓${sessions}`;
+        pill.title = `OpenClaw Gateway conectado\nAgente: ${d.agent_id}\nURL: ${d.gateway_url}\nMensajes recibidos: ${d.messages_received}`;
+      } else {
+        pill.className = 'gateway-pill offline';
+        txt.textContent = 'Gateway offline';
+        pill.title = `OpenClaw Gateway desconectado\n${d.last_error || 'Sin conexión'}`;
+      }
+    } catch {
+      pill.className = 'gateway-pill offline';
+      txt.textContent = 'Gateway —';
+    }
   }
 
   // ── Tabs ──
