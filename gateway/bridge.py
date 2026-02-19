@@ -2,9 +2,13 @@
 OpenClaw Gateway Bridge — BAKU_MASTER
 
 Conecta AgenciaBaku al OpenClaw Gateway vía WebSocket.
-Registra BAKU_MASTER como el agente principal ("main") del Gateway,
-permitiendo que mensajes de cualquier canal (WhatsApp, Telegram, Discord,
-UI local, etc.) sean procesados por el motor de BAKU_MASTER (Ollama).
+BAKU_MASTER se registra como el agente principal ("main") del Gateway.
+
+Flujo correcto de OpenClaw:
+  1. Cliente se conecta al WebSocket
+  2. Gateway envía su primer frame (greeting / challenge)
+  3. Cliente responde con credenciales / confirmación
+  4. Gateway rutea mensajes → cliente procesa → responde
 
 Config via .env:
   GATEWAY_WS_URL    URL WebSocket del Gateway  (default: ws://127.0.0.1:18789)
@@ -16,7 +20,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,69 +33,98 @@ load_dotenv()
 
 log = logging.getLogger("baku.gateway")
 
-GATEWAY_WS_URL = os.getenv("GATEWAY_WS_URL", "ws://127.0.0.1:18789")
-GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
+GATEWAY_WS_URL  = os.getenv("GATEWAY_WS_URL", "ws://127.0.0.1:18789")
+GATEWAY_TOKEN   = os.getenv("GATEWAY_TOKEN", "")
 GATEWAY_AGENT_ID = os.getenv("GATEWAY_AGENT_ID", "main")
 
-# ── Estado global del bridge (consultado por /gateway/status) ───────────────
+# ── Estado global (consultado por /gateway/status) ───────────────────────────
 _state: dict = {
-    "connected": False,
-    "agent_id": GATEWAY_AGENT_ID,
-    "gateway_url": GATEWAY_WS_URL,
-    "sessions": 0,
-    "messages_received": 0,
-    "messages_sent": 0,
-    "last_message_at": None,
-    "last_error": None,
-    "uptime_since": None,
-    "reconnect_attempts": 0,
+    "connected":        False,
+    "agent_id":         GATEWAY_AGENT_ID,
+    "gateway_url":      GATEWAY_WS_URL,
+    "sessions":         0,
+    "messages_received":0,
+    "messages_sent":    0,
+    "last_message_at":  None,
+    "last_error":       None,
+    "uptime_since":     None,
+    "reconnect_attempts":0,
+    "probe_log":        [],   # últimos frames crudos recibidos (para debugging)
 }
 
-# Historial de mensajes por session_key (para contexto multi-turno)
 _session_histories: dict[str, list[dict]] = defaultdict(list)
-
-# Task de asyncio del bridge (para control de ciclo de vida)
 _bridge_task: Optional[asyncio.Task] = None
+
+# Si el Gateway devuelve 1008 consecutivos, aumentamos el cooldown
+_consecutive_policy_errors = 0
+_MAX_POLICY_ERRORS = 5          # después de 5 rechazos → modo standby largo
+_STANDBY_SECS      = 300        # 5 minutos en standby
 
 
 def get_status() -> dict:
-    """Retorna el estado actual del bridge (para el endpoint /gateway/status)."""
     return dict(_state)
 
 
-# ── Protocolo OpenClaw ───────────────────────────────────────────────────────
+# ── Helpers de protocolo ─────────────────────────────────────────────────────
 
-def _build_connect_frame() -> str:
-    """Frame inicial de handshake con el Gateway."""
-    payload: dict = {
-        "type": "connect",
-        "params": {
-            "minProtocol": 1,
-            "maxProtocol": 2,
-            "role": "agent",
+def _build_auth_reply(server_frame: dict) -> str:
+    """
+    Construye la respuesta al greeting del Gateway.
+    OpenClaw puede enviar distintos formatos; cubrimos los más comunes.
+    """
+    req_id = server_frame.get("id", "")
+    s_type = server_frame.get("type", "")
+
+    # Formato 1: el Gateway pide autenticación explícita
+    if s_type in ("auth.required", "challenge", "hello"):
+        payload: dict = {
+            "type": "auth",
             "agentId": GATEWAY_AGENT_ID,
-        },
-    }
-    if GATEWAY_TOKEN:
-        payload["params"]["auth"] = {"token": GATEWAY_TOKEN}
-    return json.dumps(payload)
+        }
+        if req_id:
+            payload["id"] = req_id
+        if GATEWAY_TOKEN:
+            payload["token"] = GATEWAY_TOKEN
+        return json.dumps(payload)
 
+    # Formato 2: el Gateway envía un "hello" y espera un "register"
+    if s_type in ("server.hello", "gateway.hello", "welcome"):
+        payload = {
+            "type": "register",
+            "agentId": GATEWAY_AGENT_ID,
+            "role": "agent",
+        }
+        if GATEWAY_TOKEN:
+            payload["token"] = GATEWAY_TOKEN
+        return json.dumps(payload)
 
-def _build_response(request_id: str, result: dict) -> str:
-    """Respuesta RPC estándar para una petición del Gateway."""
-    return json.dumps({"id": request_id, "result": result})
+    # Formato 3: RPC — el Gateway envía una petición con id y espera respuesta
+    if req_id and s_type == "connect":
+        return json.dumps({
+            "id": req_id,
+            "result": {
+                "agentId": GATEWAY_AGENT_ID,
+                **({"token": GATEWAY_TOKEN} if GATEWAY_TOKEN else {}),
+            },
+        })
 
-
-def _build_error_response(request_id: str, message: str, code: int = -32000) -> str:
-    """Respuesta de error RPC."""
+    # Fallback: envía un frame de registro genérico
     return json.dumps({
-        "id": request_id,
-        "error": {"code": code, "message": message},
+        "type": "agent.register",
+        "agentId": GATEWAY_AGENT_ID,
+        **({"token": GATEWAY_TOKEN} if GATEWAY_TOKEN else {}),
     })
 
 
+def _build_rpc_response(request_id: str, result: dict) -> str:
+    return json.dumps({"id": request_id, "result": result})
+
+
+def _build_rpc_error(request_id: str, message: str) -> str:
+    return json.dumps({"id": request_id, "error": {"code": -32000, "message": message}})
+
+
 def _extract_session_key(params: dict) -> str:
-    """Extrae el session_key de los params del mensaje."""
     return (
         params.get("sessionKey")
         or params.get("session_key")
@@ -101,134 +133,118 @@ def _extract_session_key(params: dict) -> str:
 
 
 def _extract_user_content(params: dict) -> str:
-    """Extrae el texto del usuario del frame del Gateway."""
     msg = params.get("message") or {}
     if isinstance(msg, dict):
         return msg.get("content") or msg.get("text") or ""
     if isinstance(msg, str):
         return msg
-    # Algunos gateways envían el contenido directamente en params
     return params.get("content") or params.get("text") or ""
 
 
 # ── Procesamiento de mensajes ────────────────────────────────────────────────
 
-async def _handle_message(ws, raw: str) -> None:
-    """Procesa un mensaje recibido del Gateway."""
+async def _handle_frame(ws, raw: str, is_first: bool) -> bool:
+    """
+    Procesa un frame del Gateway.
+    `is_first=True` → es el primer mensaje tras conectar (puede ser greeting).
+    Retorna True si la conexión debe seguir abierta.
+    """
     try:
         frame = json.loads(raw)
     except json.JSONDecodeError:
-        log.warning("Gateway envió JSON inválido: %s", raw[:200])
-        return
+        log.warning("Frame JSON inválido: %s", raw[:300])
+        return True
+
+    # Guardar en probe_log para diagnóstico (máx 10 entradas)
+    _state["probe_log"] = ([raw[:500]] + _state["probe_log"])[:10]
 
     msg_type = frame.get("type", "")
-    request_id = frame.get("id", "")
-    params = frame.get("params") or {}
+    request_id = frame.get("id", "") or ""
+    params = frame.get("params") or frame.get("data") or {}
 
     _state["messages_received"] += 1
     _state["last_message_at"] = datetime.now(timezone.utc).isoformat()
 
-    log.debug("Gateway → [%s] id=%s", msg_type, request_id)
+    log.debug("← Gateway [%s] id=%s", msg_type, request_id)
+
+    # ── El Gateway envía su greeting primero ─────────────────────────────
+    if is_first or msg_type in (
+        "hello", "server.hello", "gateway.hello", "welcome",
+        "auth.required", "challenge", "connect",
+    ):
+        log.info("🤝 Gateway greeting recibido (type=%s) — respondiendo...", msg_type or "?")
+        reply = _build_auth_reply(frame)
+        await ws.send(reply)
+        log.debug("→ Gateway auth/register enviado")
+        return True
 
     # ── Handshake confirmado ──────────────────────────────────────────────
-    if msg_type in ("connected", "connect.ack", "welcome"):
+    if msg_type in ("connected", "connect.ack", "auth.ok", "registered", "agent.registered"):
         _state["connected"] = True
         _state["uptime_since"] = datetime.now(timezone.utc).isoformat()
-        _state["reconnect_attempts"] = 0
-        log.info("✅ Conectado al Gateway como agente '%s'", GATEWAY_AGENT_ID)
-        return
+        log.info("✅ BAKU_MASTER registrado en el Gateway como agente '%s'", GATEWAY_AGENT_ID)
+        return True
 
     # ── Mensajes de chat / sesión ─────────────────────────────────────────
-    if msg_type in ("sessions.send", "agent.send", "message", "chat"):
+    if msg_type in ("sessions.send", "agent.send", "message", "chat", "agent.message"):
         session_key = _extract_session_key(params)
         user_content = _extract_user_content(params)
 
         if not user_content:
-            log.warning("Mensaje sin contenido para sesión %s", session_key)
             if request_id:
-                await ws.send(_build_error_response(request_id, "Contenido vacío"))
-            return
+                await ws.send(_build_rpc_error(request_id, "Contenido vacío"))
+            return True
 
         log.info("📨 [%s] → '%s...'", session_key, user_content[:60])
-
-        # Agregar al historial de sesión
         history = _session_histories[session_key]
         history.append({"role": "user", "content": user_content})
-
-        # Mantener ventana de contexto (últimos 20 mensajes)
         if len(history) > 20:
             history[:] = history[-20:]
 
-        # Procesar con BAKU_MASTER
         result = await chat(history)
-
         if result.get("error"):
-            log.error("Error de BAKU_MASTER: %s", result["error"])
+            log.error("Error BAKU_MASTER: %s", result["error"])
             if request_id:
-                await ws.send(_build_error_response(request_id, result["error"]))
-            return
+                await ws.send(_build_rpc_error(request_id, result["error"]))
+            return True
 
-        assistant_content = result.get("content", "")
-        history.append({"role": "assistant", "content": assistant_content})
-
-        # Contar sesiones únicas activas
+        content = result.get("content", "")
+        history.append({"role": "assistant", "content": content})
         _state["sessions"] = len(_session_histories)
 
-        # Responder al Gateway
-        response = _build_response(request_id, {
-            "message": {
-                "role": "assistant",
-                "content": assistant_content,
-            },
-            "meta": {
-                "mode": result.get("mode", "BAKU_MASTER"),
-                "via": result.get("via", "ollama"),
-                "agent": GATEWAY_AGENT_ID,
-            },
-        })
-        await ws.send(response)
+        await ws.send(_build_rpc_response(request_id, {
+            "message": {"role": "assistant", "content": content},
+            "meta": {"mode": result.get("mode", "BAKU_MASTER"), "agent": GATEWAY_AGENT_ID},
+        }))
         _state["messages_sent"] += 1
-        log.info("📤 [%s] ← %d chars (mode: %s)", session_key, len(assistant_content), result.get("mode"))
-        return
+        log.info("📤 [%s] ← %d chars", session_key, len(content))
+        return True
+
+    # ── Ping ──────────────────────────────────────────────────────────────
+    if msg_type in ("ping", "heartbeat"):
+        if request_id:
+            await ws.send(_build_rpc_response(request_id, {"pong": True}))
+        return True
 
     # ── Limpiar sesión ────────────────────────────────────────────────────
     if msg_type in ("sessions.clear", "session.reset"):
-        session_key = _extract_session_key(params)
-        _session_histories.pop(session_key, None)
+        sk = _extract_session_key(params)
+        _session_histories.pop(sk, None)
         _state["sessions"] = len(_session_histories)
-        log.info("🗑️  Sesión limpiada: %s", session_key)
         if request_id:
-            await ws.send(_build_response(request_id, {"cleared": True}))
-        return
+            await ws.send(_build_rpc_response(request_id, {"cleared": True}))
+        return True
 
-    # ── Ping / heartbeat ──────────────────────────────────────────────────
-    if msg_type in ("ping", "heartbeat"):
-        if request_id:
-            await ws.send(_build_response(request_id, {"pong": True}))
-        return
-
-    # ── Config / capabilities (el Gateway puede consultar al agente) ──────
-    if msg_type == "agent.capabilities":
-        await ws.send(_build_response(request_id, {
-            "agentId": GATEWAY_AGENT_ID,
-            "name": "BAKU_MASTER",
-            "description": "Director Estratégico Senior de Baku Agency. Meta Ads, Google Ads, Leads, CRO.",
-            "capabilities": [
-                "chat", "leads_management", "autonomous_scheduler",
-                "strategic_analysis", "content_generation",
-            ],
-        }))
-        return
-
-    # ── Frame desconocido ─────────────────────────────────────────────────
-    log.debug("Frame no manejado: type=%s", msg_type)
+    # ── Frame desconocido — loguear completo para diagnóstico ─────────────
+    log.debug("Frame no manejado: %s", raw[:300])
+    return True
 
 
-# ── Ciclo de conexión con reconexión automática ──────────────────────────────
+# ── Ciclo principal ──────────────────────────────────────────────────────────
 
 async def _run_bridge() -> None:
-    """Bucle principal del bridge con reconexión exponencial."""
-    backoff = 2
+    global _consecutive_policy_errors
+    backoff = 5
     max_backoff = 60
 
     while True:
@@ -236,58 +252,110 @@ async def _run_bridge() -> None:
             log.info("🔌 Conectando al Gateway: %s", GATEWAY_WS_URL)
             _state["connected"] = False
 
-            async with websockets.connect(
-                GATEWAY_WS_URL,
-                open_timeout=10,
-                ping_interval=30,
-                ping_timeout=10,
-            ) as ws:
-                # Handshake inicial
-                await ws.send(_build_connect_frame())
-                backoff = 2  # Reset backoff al conectar
+            # Token en query string (algunos gateways lo esperan aquí)
+            url = GATEWAY_WS_URL
+            if GATEWAY_TOKEN and "token=" not in url:
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}token={GATEWAY_TOKEN}&agentId={GATEWAY_AGENT_ID}"
 
+            async with websockets.connect(
+                url,
+                open_timeout=10,
+                ping_interval=None,   # desactivamos ping automático; el gateway lo maneja
+                additional_headers={
+                    "X-Agent-Id": GATEWAY_AGENT_ID,
+                    **({"X-Agent-Token": GATEWAY_TOKEN} if GATEWAY_TOKEN else {}),
+                },
+            ) as ws:
+                _consecutive_policy_errors = 0
+                backoff = 5
+
+                # --- Escuchar el greeting del Gateway (máx 5s) ---
+                first_frame = True
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    if isinstance(raw, bytes):
+                        raw = raw.decode()
+                    await _handle_frame(ws, raw, is_first=True)
+                    first_frame = False
+                except asyncio.TimeoutError:
+                    # Gateway no envió greeting — intentamos registrarnos nosotros
+                    log.info("Sin greeting del Gateway — enviando registro proactivo...")
+                    await ws.send(json.dumps({
+                        "type": "agent.register",
+                        "agentId": GATEWAY_AGENT_ID,
+                        **({"token": GATEWAY_TOKEN} if GATEWAY_TOKEN else {}),
+                    }))
+
+                # --- Loop principal de mensajes ---
                 async for raw in ws:
                     if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8")
-                    await _handle_message(ws, raw)
+                        raw = raw.decode()
+                    await _handle_frame(ws, raw, is_first=False)
 
         except asyncio.CancelledError:
             log.info("Bridge detenido.")
             _state["connected"] = False
             break
 
-        except (websockets.exceptions.ConnectionClosed,
-                websockets.exceptions.WebSocketException,
-                OSError) as e:
+        except websockets.exceptions.ConnectionClosedError as e:
             _state["connected"] = False
             _state["last_error"] = str(e)
             _state["reconnect_attempts"] += 1
-            log.warning(
-                "Gateway desconectado (%s). Reconectando en %ds... (intento %d)",
-                e, backoff, _state["reconnect_attempts"]
-            )
+
+            # 1008 = policy violation (protocolo incorrecto o token inválido)
+            if e.code == 1008:
+                _consecutive_policy_errors += 1
+                log.warning(
+                    "⚠️  Gateway rechazó conexión (1008 policy violation) — "
+                    "intento %d/%d. Revisa GATEWAY_TOKEN o el protocolo.",
+                    _consecutive_policy_errors, _MAX_POLICY_ERRORS
+                )
+                if _consecutive_policy_errors >= _MAX_POLICY_ERRORS:
+                    log.warning(
+                        "🔴 %d rechazos consecutivos. Entrando en standby %ds. "
+                        "Verifica la config del Gateway y GATEWAY_TOKEN en .env",
+                        _consecutive_policy_errors, _STANDBY_SECS
+                    )
+                    _state["last_error"] = (
+                        f"Gateway rechazó {_consecutive_policy_errors} veces (1008). "
+                        "Revisa GATEWAY_TOKEN en .env."
+                    )
+                    await asyncio.sleep(_STANDBY_SECS)
+                    _consecutive_policy_errors = 0
+                    backoff = 5
+                    continue
+            else:
+                log.warning("Gateway desconectado (%s). Reintentando en %ds...", e, backoff)
+
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+
+        except (websockets.exceptions.WebSocketException, OSError) as e:
+            _state["connected"] = False
+            _state["last_error"] = str(e)
+            _state["reconnect_attempts"] += 1
+            log.warning("Error WS (%s). Reintentando en %ds...", e, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
         except Exception as e:
             _state["connected"] = False
             _state["last_error"] = str(e)
-            log.error("Error inesperado en el bridge: %s", e, exc_info=True)
+            log.error("Error inesperado en bridge: %s", e, exc_info=True)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
 
-# ── API pública (llamada desde api.py en el lifespan) ───────────────────────
+# ── API pública ──────────────────────────────────────────────────────────────
 
 async def start_bridge() -> None:
-    """Inicia el bridge en background. Llamar desde el startup de FastAPI."""
     global _bridge_task
     _bridge_task = asyncio.create_task(_run_bridge(), name="openclaw-bridge")
     log.info("Gateway bridge iniciado → %s (agent: %s)", GATEWAY_WS_URL, GATEWAY_AGENT_ID)
 
 
 async def stop_bridge() -> None:
-    """Detiene el bridge. Llamar desde el shutdown de FastAPI."""
     global _bridge_task
     if _bridge_task and not _bridge_task.done():
         _bridge_task.cancel()
