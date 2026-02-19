@@ -386,15 +386,16 @@
       });
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      setStatus(true);
-    } catch { setStatus(false); }
+      setStatus(true, d.via);
+    } catch { setStatus(false, ''); }
   }
 
-  function setStatus(online) {
+  function setStatus(online, via) {
     const dot = document.getElementById('status-dot');
     const txt = document.getElementById('status-text');
     dot.className = 'status-dot' + (online ? '' : ' offline');
-    txt.textContent = online ? 'MAIN conectado' : 'Ollama offline';
+    if (!online) { txt.textContent = 'Offline'; return; }
+    txt.textContent = via === 'openclaw-gateway' ? 'OpenClaw gateway' : 'Ollama directo';
   }
 
   // ── Tabs ──

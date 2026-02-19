@@ -1,8 +1,17 @@
 """
 OpenClaw MAIN agent connector.
 
-Reads SOUL.md from the OpenClaw workspace and forwards chat messages
-to the local Ollama instance using the OpenAI-compatible API.
+Connects to the OpenClaw gateway (port 18789) using the OpenAI-compatible
+chat completions endpoint, with Bearer token auth.
+
+Falls back to direct Ollama if the gateway is unreachable.
+
+Config via .env:
+  OPENCLAW_GATEWAY_URL  default: http://127.0.0.1:18789
+  OPENCLAW_TOKEN        required for gateway auth
+  OPENCLAW_SOUL         path to SOUL.md (default: OpenClaw workspace)
+  OLLAMA_URL            fallback: http://127.0.0.1:11434/v1
+  OLLAMA_MODEL          fallback model: qwen3:latest
 """
 
 import os
@@ -10,9 +19,19 @@ import re
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/v1")
-MODEL = os.getenv("OLLAMA_MODEL", "qwen3:latest")
+load_dotenv()
+
+# Gateway (OpenClaw)
+GATEWAY_URL   = os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789")
+GATEWAY_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
+
+# Fallback (direct Ollama)
+OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/v1")
+OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "qwen3:latest")
+
+# SOUL.md
 SOUL_PATH = Path(os.getenv(
     "OPENCLAW_SOUL",
     r"C:\OpenClawWorkspace\.openclaw\workspace\SOUL.md"
@@ -20,32 +39,32 @@ SOUL_PATH = Path(os.getenv(
 
 _FALLBACK_SOUL = (
     "You are BAKU_MASTER, the central intelligence of Baku Agency. "
-    "You coordinate all strategic, financial, marketing, and operational decisions. "
     "Operate with clarity, decisiveness, and precision."
 )
 
 LEADS_CONTEXT = """
-You also have access to a Leads Engine platform. When the user asks about leads,
-you can guide them to use the UI panel on the left, or they can call:
-  POST /leads       — register a new lead
-  GET  /leads       — list all leads
-  GET  /stats       — view lead statistics
-  PATCH /leads/{id}/status — update lead status
 
-Always identify which internal MODE you are operating in before responding.
+## LEADS ENGINE PLATFORM
+You have a connected Leads Engine at http://localhost:8000.
+The sidebar shows real-time stats and the leads list.
+When the user asks about leads, guide them to use the sidebar panel or the following API:
+  POST /leads              - register a new lead
+  GET  /leads              - list leads (filter: ?status=new|contacted|qualified|converted|discarded)
+  PATCH /leads/{id}/status - update lead status
+  GET  /stats              - lead counts by status and source
+Always identify your active MODE before responding.
 """
 
 
 def load_soul() -> str:
-    if SOUL_PATH.exists():
-        return SOUL_PATH.read_text(encoding="utf-8") + "\n\n" + LEADS_CONTEXT
-    return _FALLBACK_SOUL + "\n\n" + LEADS_CONTEXT
+    text = SOUL_PATH.read_text(encoding="utf-8") if SOUL_PATH.exists() else _FALLBACK_SOUL
+    return text + LEADS_CONTEXT
 
 
 def strip_think(text: str) -> tuple[str, str]:
-    """Separate <think>...</think> blocks from the main response."""
-    think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
-    thinking = think_match.group(1).strip() if think_match else ""
+    """Separate <think>...</think> from the visible response."""
+    match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    thinking = match.group(1).strip() if match else ""
     clean = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     return clean, thinking
 
@@ -63,41 +82,77 @@ def detect_mode(text: str) -> str:
     return "BAKU_MASTER"
 
 
+async def _call_gateway(messages: list[dict]) -> str:
+    """Call OpenClaw gateway (OpenAI-compatible, with Bearer token)."""
+    headers = {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            f"{GATEWAY_URL}/v1/chat/completions",
+            headers=headers,
+            json={
+                "model": "ollama-local/qwen3:latest",
+                "messages": messages,
+                "stream": False,
+            },
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+
+async def _call_ollama(messages: list[dict]) -> str:
+    """Fallback: call Ollama directly."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            f"{OLLAMA_URL}/chat/completions",
+            json={"model": OLLAMA_MODEL, "messages": messages, "stream": False},
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+
 async def chat(messages: list[dict]) -> dict:
     """
-    Send messages to Ollama and return the assistant reply.
-    messages: list of {role, content} — WITHOUT system prompt (added here).
-    Returns: {content, thinking, mode, error}
+    Send messages to BAKU_MASTER.
+    Tries OpenClaw gateway first, falls back to direct Ollama.
+    Returns: {content, thinking, mode, error, via}
     """
-    system_prompt = load_soul()
-    full_messages = [{"role": "system", "content": system_prompt}] + messages
+    system = load_soul()
+    full = [{"role": "system", "content": system}] + messages
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                f"{OLLAMA_URL}/chat/completions",
-                json={"model": MODEL, "messages": full_messages, "stream": False},
-            )
-            r.raise_for_status()
-            raw = r.json()["choices"][0]["message"]["content"]
-            content, thinking = strip_think(raw)
+    raw = None
+    via = "unknown"
+
+    # Try gateway
+    if GATEWAY_TOKEN:
+        try:
+            raw = await _call_gateway(full)
+            via = "openclaw-gateway"
+        except httpx.ConnectError:
+            pass  # gateway not running, fall through
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                return {"content": "", "thinking": "", "mode": "", "via": "",
+                        "error": "Token invalido para el gateway de OpenClaw. Revisa OPENCLAW_TOKEN en .env"}
+            pass  # other error, fall through
+
+    # Fallback to Ollama
+    if raw is None:
+        try:
+            raw = await _call_ollama(full)
+            via = "ollama-direct"
+        except httpx.ConnectError:
             return {
-                "content": content,
-                "thinking": thinking,
-                "mode": detect_mode(content),
-                "error": None,
+                "content": "", "thinking": "", "mode": "", "via": "",
+                "error": "No se puede conectar a OpenClaw ni a Ollama. Verifica que esten corriendo.",
             }
-    except httpx.ConnectError:
-        return {
-            "content": "",
-            "thinking": "",
-            "mode": "",
-            "error": "No se puede conectar a Ollama. Verifica que este corriendo en http://127.0.0.1:11434",
-        }
-    except Exception as e:
-        return {
-            "content": "",
-            "thinking": "",
-            "mode": "",
-            "error": f"Error: {str(e)}",
-        }
+        except Exception as e:
+            return {"content": "", "thinking": "", "mode": "", "via": "", "error": str(e)}
+
+    content, thinking = strip_think(raw)
+    return {
+        "content": content,
+        "thinking": thinking,
+        "mode": detect_mode(content),
+        "via": via,
+        "error": None,
+    }

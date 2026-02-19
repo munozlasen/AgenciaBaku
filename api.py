@@ -54,6 +54,7 @@ class ChatResponse(BaseModel):
     content: str
     thinking: str
     mode: str
+    via: str = ""
     error: Optional[str] = None
 
 
