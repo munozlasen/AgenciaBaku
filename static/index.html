@@ -386,16 +386,15 @@
       });
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      setStatus(true, d.via);
-    } catch { setStatus(false, ''); }
+      setStatus(true);
+    } catch { setStatus(false); }
   }
 
-  function setStatus(online, via) {
+  function setStatus(online) {
     const dot = document.getElementById('status-dot');
     const txt = document.getElementById('status-text');
     dot.className = 'status-dot' + (online ? '' : ' offline');
-    if (!online) { txt.textContent = 'Offline'; return; }
-    txt.textContent = via === 'openclaw-gateway' ? 'OpenClaw gateway' : 'Ollama directo';
+    txt.textContent = online ? 'BAKU_MASTER online' : 'Ollama offline';
   }
 
   // ── Tabs ──
