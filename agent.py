@@ -11,7 +11,7 @@ Config via .env:
   OPENCLAW_TOKEN        required for gateway auth
   OPENCLAW_SOUL         path to SOUL.md (default: OpenClaw workspace)
   OLLAMA_URL            fallback: http://127.0.0.1:11434/v1
-  OLLAMA_MODEL          fallback model: qwen3:latest
+  OLLAMA_MODEL          fallback model: qwen3:4b
 """
 
 import os
@@ -29,7 +29,7 @@ GATEWAY_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
 
 # Fallback (direct Ollama)
 OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/v1")
-OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "qwen3:latest")
+OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "qwen3:4b")
 
 # SOUL.md
 SOUL_PATH = Path(os.getenv(
@@ -90,7 +90,7 @@ async def _call_gateway(messages: list[dict]) -> str:
             f"{GATEWAY_URL}/v1/chat/completions",
             headers=headers,
             json={
-                "model": "ollama-local/qwen3:latest",
+                "model": "ollama-local/qwen3:4b",
                 "messages": messages,
                 "stream": False,
             },
