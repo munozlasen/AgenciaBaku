@@ -189,7 +189,12 @@ def _seed_initial_tasks() -> None:
     ]
 
     for t in initial_tasks:
-        create_task(**t)
+        create_task(
+            title=t["title"],
+            description=t["description"],
+            task_type=t["type"],
+            priority=t["priority"],
+        )
 
     set_memory("seeded", True)
     log_activity(
