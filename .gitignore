@@ -2,3 +2,5 @@
 leads_database/
 __pycache__/
 *.pyc
+*.db
+baku.log
