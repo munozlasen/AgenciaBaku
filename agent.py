@@ -97,6 +97,7 @@ async def _call_gateway(messages: list[dict]) -> str:
                 "model": "ollama-local/qwen3:4b",
                 "messages": messages,
                 "stream": False,
+                "options": {"think": False},
             },
         )
         r.raise_for_status()
@@ -104,11 +105,16 @@ async def _call_gateway(messages: list[dict]) -> str:
 
 
 async def _call_ollama(messages: list[dict]) -> str:
-    """Fallback: call Ollama directly."""
+    """Fallback: call Ollama directly. Thinking disabled for speed."""
     async with httpx.AsyncClient(timeout=120.0) as client:
         r = await client.post(
             f"{OLLAMA_URL}/chat/completions",
-            json={"model": OLLAMA_MODEL, "messages": messages, "stream": False},
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": messages,
+                "stream": False,
+                "options": {"think": False},
+            },
         )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
