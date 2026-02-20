@@ -67,6 +67,38 @@
         "description": "Estado de la conexión del bridge BAKU_MASTER ↔ Gateway",
         "endpoint": "http://localhost:8000/gateway/status",
         "method": "GET"
+      },
+      {
+        "name": "web_search",
+        "description": "Busca información en la web usando DuckDuckGo",
+        "endpoint": "http://localhost:8000/search",
+        "method": "POST",
+        "body_schema": { "query": "string", "max_results": "number" }
+      },
+      {
+        "name": "list_cron_jobs",
+        "description": "Lista todos los jobs de cron programados en BAKU_MASTER",
+        "endpoint": "http://localhost:8000/cron/jobs",
+        "method": "GET"
+      },
+      {
+        "name": "list_files",
+        "description": "Lista los archivos generados (DOCX, XLSX, PDF, etc.)",
+        "endpoint": "http://localhost:8000/files",
+        "method": "GET"
+      },
+      {
+        "name": "generate_file",
+        "description": "Genera un archivo en formato DOCX, XLSX, PDF, TXT o MD",
+        "endpoint": "http://localhost:8000/files/generate",
+        "method": "POST",
+        "body_schema": { "title": "string", "content": "string", "format": "string", "subtitle": "string" }
+      },
+      {
+        "name": "gateway_probe",
+        "description": "Últimos frames crudos recibidos desde el OpenClaw Gateway (debug)",
+        "endpoint": "http://localhost:8000/gateway/probe",
+        "method": "GET"
       }
     ],
 

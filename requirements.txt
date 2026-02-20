@@ -7,3 +7,9 @@ httpx>=0.27.2
 python-dotenv>=1.0.1
 apscheduler==3.10.4
 websockets>=12.0
+# Generación de archivos (DOCX, XLSX, PDF)
+python-docx>=1.1.0
+openpyxl>=3.1.2
+fpdf2>=2.7.9
+# Búsqueda web mejorada
+duckduckgo-search>=6.1.0

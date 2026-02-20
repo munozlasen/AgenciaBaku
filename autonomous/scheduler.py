@@ -1,24 +1,30 @@
 """
 BAKU_MASTER — Scheduler autónomo (APScheduler).
 
-Ciclos programados:
+Ciclos programados (zona horaria: America/Santiago):
   • Ciclo principal      → cada 30 minutos
-  • Reporte diario       → cada día a las 08:00 UTC (05:00 hora Chile)
+  • Reporte diario       → cada día a las 09:00 hrs (Santiago)
   • Análisis de leads    → cada 2 horas
 
-Arranque y apagado se integran en el lifespan de FastAPI.
+Todas las horas se manejan en America/Santiago.
 """
 
 import asyncio
 import os
+import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from autonomous.loop import run_agent_cycle
 from autonomous.memory import create_task, init_db, log_activity
 
+TZ = ZoneInfo("America/Santiago")
 CYCLE_MINUTES = int(os.getenv("BAKU_CYCLE_MINUTES", "30"))
 
 _scheduler: AsyncIOScheduler | None = None
@@ -34,10 +40,11 @@ def get_scheduler() -> AsyncIOScheduler:
 # ── Scheduled jobs ─────────────────────────────────────────────────────────────
 
 async def _daily_report_job() -> None:
-    """Encola reporte diario automático."""
+    """Encola reporte diario automático (09:00 Santiago)."""
+    now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M hrs")
     create_task(
-        title="Reporte diario ejecutivo",
-        description="Genera reporte completo del día: leads, actividad del agente, proyecciones.",
+        title=f"Reporte diario ejecutivo — {now}",
+        description="Genera reporte completo del día: leads, actividad del agente, proyecciones. Incluir alertas activas.",
         task_type="report",
         priority=8,
     )
@@ -48,7 +55,7 @@ async def _leads_check_job() -> None:
     """Verifica leads en riesgo cada 2 horas."""
     create_task(
         title="Revisión de leads en riesgo",
-        description="Identifica leads sin contactar y contactados sin respuesta. Propone acciones.",
+        description="Identificar leads sin contactar y contactados sin respuesta. Proponer acciones concretas.",
         task_type="lead_search",
         priority=7,
     )
@@ -62,45 +69,40 @@ async def startup() -> None:
     init_db()
     log_activity("BAKU_MASTER iniciando en modo autónomo...", level="info")
 
-    # Seed initial tasks on first run
     _seed_initial_tasks()
 
     scheduler = get_scheduler()
 
-    # Main autonomous cycle
     scheduler.add_job(
         run_agent_cycle,
-        trigger=IntervalTrigger(minutes=CYCLE_MINUTES),
+        trigger=IntervalTrigger(minutes=CYCLE_MINUTES, timezone=TZ),
         id="main_cycle",
-        name="BAKU_MASTER — Ciclo Principal",
+        name=f"BAKU_MASTER — Ciclo Principal (cada {CYCLE_MINUTES} min)",
         replace_existing=True,
     )
 
-    # Daily report at 08:00 UTC (05:00 Chile)
     scheduler.add_job(
         _daily_report_job,
-        trigger=CronTrigger(hour=8, minute=0),
+        trigger=CronTrigger(hour=9, minute=0, timezone=TZ),
         id="daily_report",
-        name="BAKU_MASTER — Reporte Diario",
+        name="BAKU_MASTER — Reporte Diario (09:00 Santiago)",
         replace_existing=True,
     )
 
-    # Leads check every 2 hours
     scheduler.add_job(
         _leads_check_job,
-        trigger=IntervalTrigger(hours=2),
+        trigger=IntervalTrigger(hours=2, timezone=TZ),
         id="leads_check",
-        name="BAKU_MASTER — Revisión de Leads",
+        name="BAKU_MASTER — Revisión de Leads (cada 2h)",
         replace_existing=True,
     )
 
     scheduler.start()
     log_activity(
-        f"Scheduler activo — ciclo cada {CYCLE_MINUTES} min | reporte diario 08:00 UTC | leads cada 2h",
+        f"Scheduler activo — ciclo cada {CYCLE_MINUTES} min | reporte 09:00 Santiago | leads cada 2h",
         level="success",
     )
 
-    # Run first cycle immediately in background
     asyncio.create_task(run_agent_cycle())
     log_activity("Primer ciclo autónomo disparado", level="info")
 
@@ -119,21 +121,182 @@ async def trigger_cycle_now() -> None:
     await run_agent_cycle()
 
 
+# ── Cron Management API ────────────────────────────────────────────────────────
+
+def list_jobs() -> list[dict]:
+    """Lista todos los trabajos programados con su próxima ejecución."""
+    scheduler = get_scheduler()
+    jobs = []
+    for job in scheduler.get_jobs():
+        next_run = None
+        if job.next_run_time:
+            # Convertir a Santiago
+            nr = job.next_run_time.astimezone(TZ)
+            next_run = nr.strftime("%d/%m/%Y %H:%M hrs")
+            next_run_iso = nr.isoformat()
+        else:
+            next_run_iso = None
+
+        # Determinar tipo de trigger
+        trigger_type = type(job.trigger).__name__.replace("Trigger", "").lower()
+        trigger_desc = _describe_trigger(job)
+
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "trigger_type": trigger_type,
+            "trigger_desc": trigger_desc,
+            "next_run": next_run,
+            "next_run_iso": next_run_iso,
+            "is_paused": job.next_run_time is None,
+        })
+    return jobs
+
+
+def _describe_trigger(job) -> str:
+    """Genera descripción human-readable del trigger."""
+    t = job.trigger
+    if isinstance(t, IntervalTrigger):
+        fields = {f.name: f.value for f in t.fields if not f.is_default}
+        parts = []
+        if fields.get("weeks"):
+            parts.append(f"cada {fields['weeks']} semana(s)")
+        if fields.get("days"):
+            parts.append(f"cada {fields['days']} día(s)")
+        if fields.get("hours"):
+            parts.append(f"cada {fields['hours']} hora(s)")
+        if fields.get("minutes"):
+            parts.append(f"cada {fields['minutes']} min")
+        if fields.get("seconds"):
+            parts.append(f"cada {fields['seconds']} seg")
+        return " | ".join(parts) if parts else "intervalo"
+    elif isinstance(t, CronTrigger):
+        fields = {f.name: str(f) for f in t.fields if not f.is_default}
+        return f"cron: {' '.join(str(f) for f in t.fields)}"
+    elif isinstance(t, DateTrigger):
+        return f"una vez: {t.run_date.strftime('%d/%m/%Y %H:%M')}"
+    return str(t)
+
+
+def add_custom_job(
+    title: str,
+    description: str,
+    task_type: str,
+    priority: int,
+    trigger_type: str,
+    trigger_params: dict,
+) -> dict:
+    """
+    Agrega un nuevo job personalizado al scheduler.
+
+    trigger_type: 'interval' | 'cron' | 'date'
+    trigger_params ejemplos:
+      interval: {minutes: 60} | {hours: 4} | {days: 1}
+      cron: {hour: 10, minute: 30} | {day_of_week: 'mon', hour: 9}
+      date: {run_date: '2026-02-20 10:00:00'}
+    """
+    scheduler = get_scheduler()
+    job_id = f"custom_{uuid.uuid4().hex[:8]}"
+
+    # Función a ejecutar
+    async def _custom_job():
+        create_task(
+            title=title,
+            description=description,
+            task_type=task_type,
+            priority=priority,
+        )
+        log_activity(f"Tarea encolada por job programado: {title}", level="info")
+
+    # Crear trigger
+    if trigger_type == "interval":
+        trigger = IntervalTrigger(timezone=TZ, **trigger_params)
+    elif trigger_type == "cron":
+        trigger = CronTrigger(timezone=TZ, **trigger_params)
+    elif trigger_type == "date":
+        run_date = trigger_params.get("run_date")
+        trigger = DateTrigger(run_date=run_date, timezone=TZ)
+    else:
+        raise ValueError(f"trigger_type inválido: {trigger_type}. Usa: interval | cron | date")
+
+    job = scheduler.add_job(
+        _custom_job,
+        trigger=trigger,
+        id=job_id,
+        name=f"Custom: {title[:50]}",
+    )
+
+    next_run = None
+    if job.next_run_time:
+        nr = job.next_run_time.astimezone(TZ)
+        next_run = nr.strftime("%d/%m/%Y %H:%M hrs")
+
+    log_activity(f"Job personalizado creado: {title} [{job_id}]", level="success")
+    return {
+        "id": job_id,
+        "name": job.name,
+        "trigger_type": trigger_type,
+        "next_run": next_run,
+    }
+
+
+def remove_job(job_id: str) -> bool:
+    """Elimina un job del scheduler. Retorna True si se eliminó."""
+    scheduler = get_scheduler()
+    try:
+        scheduler.remove_job(job_id)
+        log_activity(f"Job eliminado: {job_id}", level="warning")
+        return True
+    except Exception:
+        return False
+
+
+def pause_job(job_id: str) -> bool:
+    """Pausa un job. Retorna True si tuvo éxito."""
+    scheduler = get_scheduler()
+    try:
+        scheduler.pause_job(job_id)
+        log_activity(f"Job pausado: {job_id}", level="info")
+        return True
+    except Exception:
+        return False
+
+
+def resume_job(job_id: str) -> bool:
+    """Reanuda un job pausado. Retorna True si tuvo éxito."""
+    scheduler = get_scheduler()
+    try:
+        scheduler.resume_job(job_id)
+        log_activity(f"Job reanudado: {job_id}", level="info")
+        return True
+    except Exception:
+        return False
+
+
+async def trigger_job_now(job_id: str) -> bool:
+    """Ejecuta un job inmediatamente. Retorna True si tuvo éxito."""
+    scheduler = get_scheduler()
+    job = scheduler.get_job(job_id)
+    if not job:
+        return False
+    try:
+        asyncio.create_task(job.func())
+        log_activity(f"Job ejecutado manualmente: {job_id}", level="info")
+        return True
+    except Exception:
+        return False
+
+
 def get_scheduler_status() -> dict:
     """Retorna estado del scheduler para la API."""
     scheduler = get_scheduler()
-    jobs = []
-    if scheduler.running:
-        for job in scheduler.get_jobs():
-            jobs.append({
-                "id": job.id,
-                "name": job.name,
-                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
-            })
+    now = datetime.now(TZ)
     return {
         "running": scheduler.running,
         "cycle_minutes": CYCLE_MINUTES,
-        "jobs": jobs,
+        "timezone": "America/Santiago",
+        "now_santiago": now.strftime("%d/%m/%Y %H:%M hrs"),
+        "jobs": list_jobs(),
     }
 
 
@@ -171,7 +334,7 @@ def _seed_initial_tasks() -> None:
             "title": "Crear primer copy para Meta Ads — captación de leads",
             "description": (
                 "Generar 3 variantes de copy para anuncios en Facebook/Instagram. "
-                "Objetivo: generar leads B2B en Chile interesados en marketing digital. "
+                "Objetivo: leads B2B en Chile interesados en marketing digital. "
                 "Incluir titular, descripción y CTA. Presupuesto test sugerido."
             ),
             "type": "content_gen",
