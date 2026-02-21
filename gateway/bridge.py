@@ -40,6 +40,7 @@ GATEWAY_AGENT_ID = os.getenv("GATEWAY_AGENT_ID", "main")
 # ── Estado global (consultado por /gateway/status) ───────────────────────────
 _state: dict = {
     "connected":        False,
+    "mode":             "WS",   # "WS" | "REST" (REST = OpenClaw llama nuestra API)
     "agent_id":         GATEWAY_AGENT_ID,
     "gateway_url":      GATEWAY_WS_URL,
     "sessions":         0,
@@ -55,10 +56,10 @@ _state: dict = {
 _session_histories: dict[str, list[dict]] = defaultdict(list)
 _bridge_task: Optional[asyncio.Task] = None
 
-# Si el Gateway devuelve 1008 consecutivos, aumentamos el cooldown
+# Si el Gateway devuelve 1008 consecutivos, entramos en modo REST permanente
 _consecutive_policy_errors = 0
-_MAX_POLICY_ERRORS = 5          # después de 5 rechazos → modo standby largo
-_STANDBY_SECS      = 300        # 5 minutos en standby
+_MAX_POLICY_ERRORS = 3          # después de 3 rechazos → modo REST permanente
+_rest_mode         = False      # True = OpenClaw no acepta WS, usar solo REST
 
 
 def get_status() -> dict:
@@ -243,11 +244,19 @@ async def _handle_frame(ws, raw: str, is_first: bool) -> bool:
 # ── Ciclo principal ──────────────────────────────────────────────────────────
 
 async def _run_bridge() -> None:
-    global _consecutive_policy_errors
+    global _consecutive_policy_errors, _rest_mode
     backoff = 5
     max_backoff = 60
 
     while True:
+        if _rest_mode:
+            # OpenClaw no acepta conexiones WebSocket de agentes.
+            # La integración ocurre vía REST (openclaw-agent-config.json tools).
+            log.info("🔵 Modo REST activo — bridge WebSocket detenido. "
+                     "OpenClaw llama a http://localhost:8000 para los tools.")
+            _state["connected"] = False
+            _state["mode"]      = "REST"
+            return
         try:
             log.info("🔌 Conectando al Gateway: %s", GATEWAY_WS_URL)
             _state["connected"] = False
@@ -303,28 +312,30 @@ async def _run_bridge() -> None:
             _state["last_error"] = str(e)
             _state["reconnect_attempts"] += 1
 
-            # 1008 = policy violation (protocolo incorrecto o token inválido)
+            # 1008 = policy violation
+            # OpenClaw Gateway no acepta conexiones WebSocket de agentes —
+            # su modelo es que ÉL llama a nuestra API REST, no al revés.
             if e.code == 1008:
                 _consecutive_policy_errors += 1
                 log.warning(
-                    "⚠️  Gateway rechazó conexión (1008 policy violation) — "
-                    "intento %d/%d. Revisa GATEWAY_TOKEN o el protocolo.",
+                    "⚠️  Gateway rechazó con 1008 (intento %d/%d) — "
+                    "OpenClaw no acepta conexiones WS de agentes.",
                     _consecutive_policy_errors, _MAX_POLICY_ERRORS
                 )
                 if _consecutive_policy_errors >= _MAX_POLICY_ERRORS:
-                    log.warning(
-                        "🔴 %d rechazos consecutivos. Entrando en standby %ds. "
-                        "Verifica la config del Gateway y GATEWAY_TOKEN en .env",
-                        _consecutive_policy_errors, _STANDBY_SECS
-                    )
+                    _rest_mode = True
+                    _state["mode"] = "REST"
                     _state["last_error"] = (
-                        f"Gateway rechazó {_consecutive_policy_errors} veces (1008). "
-                        "Revisa GATEWAY_TOKEN en .env."
+                        "OpenClaw no acepta WS de agentes (1008 reiterado). "
+                        "Modo REST activo: OpenClaw llama a http://localhost:8000. "
+                        "Configura openclaw.json con los datos de openclaw-agent-config.json."
                     )
-                    await asyncio.sleep(_STANDBY_SECS)
-                    _consecutive_policy_errors = 0
-                    backoff = 5
-                    continue
+                    log.warning(
+                        "🔵 Cambiando a modo REST permanente. "
+                        "OpenClaw debe configurarse con openclaw-agent-config.json "
+                        "para llamar a http://localhost:8000."
+                    )
+                    return
             else:
                 log.warning("Gateway desconectado (%s). Reintentando en %ds...", e, backoff)
 

@@ -267,15 +267,29 @@ async def stop_gateway_server() -> None:
 
 
 async def _run_server() -> None:
+    try:
+        server = await websockets.serve(
+            _handle_connection,
+            "0.0.0.0",
+            GATEWAY_PORT,
+            ping_interval=30,
+            ping_timeout=10,
+        )
+    except OSError as e:
+        # Puerto ya ocupado (OpenClaw u otro proceso lo tiene)
+        log.warning(
+            "⚠️  Puerto %d ya está en uso (%s). "
+            "BAKU Gateway Server no se inicia — OpenClaw u otro proceso ocupa el puerto. "
+            "Los tools REST en openclaw-agent-config.json son la integración correcta.",
+            GATEWAY_PORT, e,
+        )
+        _server_state["running"] = False
+        _server_state["error"]   = f"Puerto {GATEWAY_PORT} ocupado: {e}"
+        return
+
     _server_state["running"]    = True
     _server_state["started_at"] = datetime.now(timezone.utc).isoformat()
+    log.info("🚀 BAKU Gateway escuchando en ws://0.0.0.0:%d", GATEWAY_PORT)
 
-    async with websockets.serve(
-        _handle_connection,
-        "0.0.0.0",
-        GATEWAY_PORT,
-        ping_interval=30,
-        ping_timeout=10,
-    ):
-        log.info("🚀 BAKU Gateway escuchando en ws://0.0.0.0:%d", GATEWAY_PORT)
+    async with server:
         await asyncio.Future()  # corre indefinidamente
