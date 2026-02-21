@@ -29,8 +29,10 @@ from autonomous.memory import (
 )
 from autonomous.tools import TOOLS_SPEC, execute_tool
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
+OLLAMA_HOST        = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+OLLAMA_NUM_CTX     = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))
 SOUL_PATH = Path(__file__).parent.parent / "SOUL.md"
 
 MAX_TOOL_ROUNDS = 5  # máximo de rondas de tool-calling por tarea
@@ -74,6 +76,10 @@ async def _call_ollama(messages: list[dict]) -> dict:
                 "messages": messages,
                 "tools": TOOLS_SPEC,
                 "stream": False,
+                "options": {
+                    "num_ctx": OLLAMA_NUM_CTX,
+                    "temperature": OLLAMA_TEMPERATURE,
+                },
             },
         )
         r.raise_for_status()

@@ -21,11 +21,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OLLAMA_HOST  = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
-SOUL_PATH    = Path(os.getenv(
+OLLAMA_HOST        = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+OLLAMA_NUM_CTX     = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))
+SOUL_PATH          = Path(os.getenv(
     "OPENCLAW_SOUL",
-    r"C:\OpenClawWorkspace\.openclaw\workspace\SOUL.md"
+    str(Path(__file__).parent / "SOUL.md")
 ))
 
 TZ_SANTIAGO = ZoneInfo("America/Santiago")
@@ -130,6 +132,10 @@ async def chat(messages: list[dict]) -> dict:
                     "model": OLLAMA_MODEL,
                     "messages": full_messages,
                     "stream": False,
+                    "options": {
+                        "num_ctx": OLLAMA_NUM_CTX,
+                        "temperature": OLLAMA_TEMPERATURE,
+                    },
                 },
             )
             r.raise_for_status()
