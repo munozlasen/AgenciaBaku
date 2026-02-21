@@ -34,6 +34,7 @@ Baku Agency — MAIN Agent Platform
   GET  /gateway/probe   → Últimos frames recibidos del Gateway (debug)
 """
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -48,6 +49,7 @@ from pydantic import BaseModel
 
 from agent import chat
 from gateway.bridge import get_status as gateway_get_status, start_bridge, stop_bridge
+from gateway.server import get_server_state, start_gateway_server, stop_gateway_server
 from autonomous.memory import (
     create_task,
     get_all_memory,
@@ -86,11 +88,14 @@ def _now_santiago() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await startup()          # init DB, seed tasks, start scheduler
-    await start_bridge()     # conectar BAKU_MASTER al OpenClaw Gateway
+    await startup()               # init DB, seed tasks, start scheduler
+    await start_gateway_server()  # levantar Gateway WebSocket en puerto 18789
+    await asyncio.sleep(0.3)      # esperar a que el servidor esté listo
+    await start_bridge()          # conectar BAKU_MASTER al Gateway local
     yield
-    await stop_bridge()      # desconectar del Gateway
-    await shutdown()         # stop scheduler cleanly
+    await stop_bridge()           # desconectar bridge del Gateway
+    await stop_gateway_server()   # apagar Gateway Server
+    await shutdown()              # stop scheduler cleanly
 
 
 # ── App ─────────────────────────────────────────────────────────────────────────
@@ -210,8 +215,13 @@ def stats():
 
 @app.get("/gateway/status", tags=["Gateway"])
 def gateway_status():
-    """Estado de la conexión de BAKU_MASTER con el OpenClaw Gateway."""
-    return gateway_get_status()
+    """Estado del Gateway local y la conexión del bridge BAKU_MASTER."""
+    bridge  = gateway_get_status()
+    server  = get_server_state()
+    return {
+        "server":  server,   # Gateway WebSocket (puerto 18789)
+        "bridge":  bridge,   # Conexión del agente al Gateway
+    }
 
 
 @app.get("/gateway/probe", tags=["Gateway"])

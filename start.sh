@@ -86,27 +86,11 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════
-# PASO 3 — Verificar OpenClaw Gateway (informativo)
+# PASO 3 — Gateway WebSocket (corre internamente con FastAPI)
 # ════════════════════════════════════════════════════════════════
-step "Verificando OpenClaw Gateway"
-
-GW_HOST=$(echo "$GATEWAY_WS_URL" | sed 's|ws://||' | cut -d'/' -f1)
-GW_IP=$(echo "$GW_HOST" | cut -d':' -f1)
-GW_PORT=$(echo "$GW_HOST" | cut -d':' -f2)
-
-if timeout 2 bash -c "cat /dev/null > /dev/tcp/${GW_IP}/${GW_PORT}" 2>/dev/null; then
-    log "OpenClaw Gateway detectado en ${GATEWAY_WS_URL} ✓"
-    GATEWAY_STATUS="CONECTADO"
-else
-    warn "OpenClaw Gateway NO está corriendo en ${GATEWAY_WS_URL}"
-    echo -e "${CYAN}"
-    echo "  OpenClaw Gateway es una aplicación separada que debes iniciar:"
-    echo "  - En Windows: abre OpenClaw y activa el Gateway"
-    echo "  - Puerto esperado: ${GW_PORT}"
-    echo "  - La UI de Baku (http://localhost:8000) funciona SIN Gateway"
-    echo -e "${NC}"
-    GATEWAY_STATUS="NO DISPONIBLE"
-fi
+step "Gateway WebSocket"
+log "El Gateway WebSocket se iniciará en ${GATEWAY_WS_URL} (interno)"
+GATEWAY_STATUS="INICIANDO CON FASTAPI"
 
 # ════════════════════════════════════════════════════════════════
 # PASO 4 — Instalar dependencias Python (si es necesario)
@@ -130,7 +114,7 @@ echo ""
 echo -e "  ${CYAN}UI / Chat:${NC}     http://localhost:8000"
 echo -e "  ${CYAN}API Docs:${NC}      http://localhost:8000/api/docs"
 echo -e "  ${CYAN}Modelo:${NC}        ${OLLAMA_MODEL}"
-echo -e "  ${CYAN}Gateway:${NC}       ${GATEWAY_STATUS}"
+echo -e "  ${CYAN}Gateway:${NC}       ws://localhost:${GATEWAY_WS_URL##*:} (integrado)"
 echo ""
 echo -e "${YELLOW}  Ctrl+C para detener${NC}"
 echo ""
